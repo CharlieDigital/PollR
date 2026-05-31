@@ -22,7 +22,7 @@ jobs:
       run: dotnet build -c Release --no-restore
 
     - name: Test
-      run: dotnet test -c Release --no-build --verbosity normal
+      run: dotnet run --project src/PollR.Tests --disable-logo
 
     - name: Publish to NuGet
       run: dotnet nuget push **/*.nupkg -s "https://api.nuget.org/v3/index.json" -k ${{ secrets.NUGET_API_KEY }} --skip-duplicate
