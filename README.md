@@ -150,6 +150,8 @@ Consumers join the stream by providing:
 
 The read cycle uses the current cursor unless a subscriber is catching up, in which case it reads from the oldest active catch-up cursor.  This allows the poller to efficiently read forward without needing to run a separate read for each consumer, but keep in mind that *it does not partition by consumer*; it uses a global feed.
 
+> ℹ️ PollR does not produce separate polling for each partition (future improvement); it performs a global polling read and then distributes the results by subscribed partition while reading through all results.  This is most suitable for scenarios where consumers join occasionally, sync up, and stay attached to the feed for long durations.
+
 ### Broadcasting
 
 Once the poller has read the data, it broadcasts the data to all of the consumers that are subscribed to the stream.  The single stream can contain **multiple partitions**.
