@@ -93,7 +93,11 @@ events.addEventListener(tenant, event => {
 
 ### Terminal Demo
 
+https://github.com/user-attachments/assets/46b59813-279f-448f-8489-19c57e1f28db
+
 ### Story Mode Demo
+
+https://github.com/user-attachments/assets/7878ac47-ab02-4b26-be6f-5d268066a6b9
 
 ## Motivation
 
