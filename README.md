@@ -8,6 +8,10 @@ Provides a no-infrastructure, easy to understand way to implement streaming data
 
 ## Usage Overview
 
+```shell
+dotnet add package PollR.AspNetCore
+```
+
 A bare minimum PollR setup exposes a cursor-backed data source as Server-Sent Events:
 
 ```csharp
