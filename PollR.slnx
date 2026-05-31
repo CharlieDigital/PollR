@@ -1,20 +1,12 @@
 <Solution>
-  <Folder Name="/samples/">
+  <Folder Name="/samples/Console/">
+    <Project Path="samples/Console/Console.csproj" />
     <Project Path="samples/Terminal/Terminal.csproj" />
   </Folder>
-  <Folder Name="/samples/console/">
-    <Project Path="samples/console/Console.csproj" />
-  </Folder>
-  <Folder Name="/samples/webcontroller/">
+  <Folder Name="/samples/Web/">
     <Project Path="samples/WebController/WebController.csproj" />
-  </Folder>
-  <Folder Name="/samples/webminimal/">
     <Project Path="samples/WebMinimal/WebMinimal.csproj" />
-  </Folder>
-  <Folder Name="/samples/webminimalgrpc/">
     <Project Path="samples/WebMinimalGrpc/WebMinimalGrpc.csproj" />
-  </Folder>
-  <Folder Name="/samples/webshared/">
     <Project Path="samples/WebShared/WebShared.csproj" />
   </Folder>
   <Folder Name="/src/">
