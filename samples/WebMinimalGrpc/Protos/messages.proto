@@ -1,0 +1,20 @@
+syntax = "proto3";
+
+option csharp_namespace = "PollR.Samples.WebMinimalGrpc";
+
+package pollr.samples;
+
+service Messages {
+  rpc Subscribe (SubscribeRequest) returns (stream MessageEnvelope);
+}
+
+message SubscribeRequest {
+  string topic = 1;
+  string cursor = 2;
+}
+
+message MessageEnvelope {
+  string id = 1;
+  string topic = 2;
+  string data = 3;
+}

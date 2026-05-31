@@ -1,0 +1,25 @@
+<Solution>
+  <Folder Name="/samples/">
+    <Project Path="samples/Terminal/Terminal.csproj" />
+  </Folder>
+  <Folder Name="/samples/console/">
+    <Project Path="samples/console/Console.csproj" />
+  </Folder>
+  <Folder Name="/samples/webcontroller/">
+    <Project Path="samples/WebController/WebController.csproj" />
+  </Folder>
+  <Folder Name="/samples/webminimal/">
+    <Project Path="samples/WebMinimal/WebMinimal.csproj" />
+  </Folder>
+  <Folder Name="/samples/webminimalgrpc/">
+    <Project Path="samples/WebMinimalGrpc/WebMinimalGrpc.csproj" />
+  </Folder>
+  <Folder Name="/samples/webshared/">
+    <Project Path="samples/WebShared/WebShared.csproj" />
+  </Folder>
+  <Folder Name="/src/">
+    <Project Path="src/PollR.AspNetCore/PollR.AspNetCore.csproj" />
+    <Project Path="src/PollR.Tests/PollR.Tests.csproj" />
+    <Project Path="src/PollR/PollR.csproj" />
+  </Folder>
+</Solution>
