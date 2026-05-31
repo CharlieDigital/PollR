@@ -97,9 +97,13 @@ events.addEventListener(tenant, event => {
 
 ### Terminal Demo
 
+The terminal demo shows 5 clients connecting on 3 partitions consuming the same stream and allows interactively sending messages to the in-memory EF database.
+
 https://github.com/user-attachments/assets/46b59813-279f-448f-8489-19c57e1f28db
 
 ### Story Mode Demo
+
+The story mode demo walks through the use case with a user controlled "tick" on `ENTER` that demonstrates what PollR is doing interactively.
 
 https://github.com/user-attachments/assets/7878ac47-ab02-4b26-be6f-5d268066a6b9
 
@@ -289,7 +293,7 @@ app.MapGet("/events-typed/{tenant}", (string tenant, IHttpContextAccessor httpCo
         // Use the partition as the SSE event type.
         .WithSseEventType(partition => partition)
         // Pass typed data through; ASP.NET Core serializes it for the SSE response.
-        .WithProjection(data => data.Data)
+        .WithProjection(payload => payload.Data)
 );
 ```
 
@@ -328,13 +332,15 @@ enum MessageProjection
 }
 
 var poller = new PollRCaster<MessageEvent, string>(ProduceAsync)
+    // 👇 Register a single serializer that produce a shared payload (reduce fan-out cost)
     .RegisterSerializedProjection(
         MessageProjection.Full,
-        data => JsonSerializer.Serialize(data.Data)
+        payload => JsonSerializer.Serialize(payload)
     )
+    // 👇 Only registers a projection
     .RegisterProjection(
         MessageProjection.Summary,
-        data => new MessageSummary(data.Data.Id, data.Data.Text)
+        payload => new MessageSummary(payload.Data.Id, payload.Data.Text)
     );
 
 record MessageSummary(long Id, string Text);
@@ -367,11 +373,13 @@ using System.Text.Json;
 using System.Text.Json.Serialization;
 
 var poller = new PollRCaster<MessageEvent, string>(ProduceAsync)
+    // 👇 A produced message serializes only one time and is shared by all consumers
     .RegisterSerializedProjection(
         MessageProjection.Full,
-        data => JsonSerializer.Serialize(data.Data, PollRJsonContext.Default.MessageEvent)
+        payload => JsonSerializer.Serialize(payload.Data, PollRJsonContext.Default.MessageEvent)
     );
 
+// 👇 Use source generated serializer for better perf!
 [JsonSerializable(typeof(MessageEvent))]
 partial class PollRJsonContext : JsonSerializerContext;
 ```
@@ -383,7 +391,9 @@ app.MapGet("/events/{tenant}/text", (string tenant, IHttpContextAccessor httpCon
     poller
         .ForHttp(httpContextAccessor)
         .WithSubscription(tenant, DateTimeOffset.UtcNow.AddMinutes(-1))
-        .WithAdHocSerializedProjection(data => JsonSerializer.Serialize(new { data.Data.Text }))
+        .WithAdHocSerializedProjection(
+            payload => JsonSerializer.Serialize(new { payload.Data.Text })
+        )
 );
 ```
 
