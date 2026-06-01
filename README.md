@@ -6,6 +6,8 @@ Add the ASP.NET adapter for easy Server-Sent Events (SSE) integration or build y
 
 Provides a no-infrastructure, easy to understand way to implement streaming data polls over SSE.
 
+![PollR Polar](./media/pollr-dark.png)
+
 ## Usage Overview
 
 ```shell
