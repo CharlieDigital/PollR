@@ -41,12 +41,13 @@ public abstract class PollRBase<TData, TPartition, TCursor>(
         IProjectionGroup<TData, TPartition, TCursor>
     > _projectionGroups = new(StringComparer.Ordinal);
 
-    readonly PollRContext<TData, TPartition, TCursor> _context = new(
-        pollingInterval,
-        initialCursorFactory,
-        clampCursor,
-        CancellationTokenSource.CreateLinkedTokenSource(cancellationToken)
-    );
+    readonly PollRContext<TData, TPartition, TCursor> _context =
+        new(
+            pollingInterval,
+            initialCursorFactory,
+            clampCursor,
+            CancellationTokenSource.CreateLinkedTokenSource(cancellationToken)
+        );
 
     Task? _startTask;
     int _completed;
