@@ -272,6 +272,42 @@ public class PollRAspNetCoreTests
     }
 
     [Test]
+    public async Task PartitionedPollR_ForHttp_WithRegisteredSerializedProjection_EmitsSerializedSseItem()
+    {
+        // Guards shared HTTP adapter support for the partitioned poller path.
+        var timestamp = DateTimeOffset.UtcNow;
+        var PollR = new PartitionedPollRCaster<int, string>(
+            (partition, cursor, cancellationToken) =>
+                ProducePartitionRecordsAfterCursorAsync(
+                    partition,
+                    cursor,
+                    cancellationToken,
+                    new ProducerResult<int, string>(1, timestamp, "tenant-1")
+                )
+        ).RegisterSerializedProjection(
+            TestProjection.Value,
+            data => $$"""{"value":{{data.Data}}}"""
+        );
+        var httpContext = CreateHttpContext();
+        var httpContextAccessor = new HttpContextAccessor { HttpContext = httpContext };
+
+        var result = PollR
+            .ForHttp(httpContextAccessor)
+            .WithSubscription("tenant-1", timestamp.AddMinutes(-1))
+            .WithRegisteredSerializedProjection(TestProjection.Value);
+
+        var executeTask = result.ExecuteAsync(httpContext);
+
+        await PollR.TickAsync();
+        await PollR.StopAsync();
+        await executeTask;
+
+        var body = ReadBody(httpContext);
+
+        await Assert.That(body).Contains("""data: {"value":1}""");
+    }
+
+    [Test]
     public async Task RegisterSerializedProjection_DuplicateKey_ThrowsInvalidOperationException()
     {
         // Guards projection identity; each key names one deterministic shared projection.
@@ -280,8 +316,8 @@ public class PollRAspNetCoreTests
         PollR.RegisterSerializedProjection("value-v1", data => data.Data.ToString());
 
         await Assert
-            .That(() =>
-                PollR.RegisterSerializedProjection("value-v1", data => data.Data.ToString())
+            .That(
+                () => PollR.RegisterSerializedProjection("value-v1", data => data.Data.ToString())
             )
             .Throws<InvalidOperationException>();
     }
@@ -320,6 +356,29 @@ public class PollRAspNetCoreTests
         await Task.Yield();
 
         foreach (var result in results.Where(result => result.Cursor > cursor))
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            yield return result;
+        }
+    }
+
+    static async IAsyncEnumerable<
+        ProducerResult<int, string>
+    > ProducePartitionRecordsAfterCursorAsync(
+        string partition,
+        DateTimeOffset cursor,
+        [System.Runtime.CompilerServices.EnumeratorCancellation]
+            CancellationToken cancellationToken,
+        params ProducerResult<int, string>[] results
+    )
+    {
+        await Task.Yield();
+
+        foreach (
+            var result in results.Where(result =>
+                result.Partition == partition && result.Cursor > cursor
+            )
+        )
         {
             cancellationToken.ThrowIfCancellationRequested();
             yield return result;
