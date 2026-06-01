@@ -125,15 +125,13 @@ public class PollRContextTests
     )
         where TPartition : notnull =>
         new(
-            pollingInterval,
             () => DateTimeOffset.UtcNow - (lookbackWindow ?? TimeSpan.FromMinutes(1)),
             cursor =>
             {
                 var oldestAllowedCursor =
                     DateTimeOffset.UtcNow - (maxLookbackWindow ?? TimeSpan.FromMinutes(5));
                 return cursor < oldestAllowedCursor ? oldestAllowedCursor : cursor;
-            },
-            new CancellationTokenSource()
+            }
         );
 
     sealed class RecordingStream<TData> : IDataStream<TData>

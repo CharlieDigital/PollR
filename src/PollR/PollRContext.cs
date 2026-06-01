@@ -6,25 +6,25 @@ using ZLinq;
 namespace PollR;
 
 /// <summary>
-/// The context class that manages subscriber state, cursor positions, and synchronization for the PollR system.
+/// Shared-feed subscriber and cursor state for the existing poller implementation.
 /// </summary>
 /// <typeparam name="TData">The type of data being processed.</typeparam>
 /// <typeparam name="TPartition">The type of partition key.</typeparam>
 /// <typeparam name="TCursor">The type of cursor used for tracking positions.</typeparam>
-/// <param name="pollingInterval">The interval at which to poll for new data.</param>
-/// <param name="initialCursorFactory">A factory function to provide the initial cursor position.</param name="clampCursor">A function to clamp cursor positions within valid bounds.</param>
-/// <param name="cancellationTokenSource">A cancellation token source for managing cancellation.</param>
+/// <remarks>
+/// This type intentionally does not own runner lifetime. The lifecycle base now owns
+/// cancellation and tick orchestration; the context stays focused on shared-feed
+/// subscriber registration, cursor selection, and catch-up promotion.
+/// </remarks>
+/// <param name="initialCursorFactory">A factory function to provide the initial cursor position.</param>
+/// <param name="clampCursor">A function to clamp cursor positions within valid bounds.</param>
 internal sealed class PollRContext<TData, TPartition, TCursor>(
-    TimeSpan? pollingInterval,
     Func<TCursor> initialCursorFactory,
-    Func<TCursor, TCursor> clampCursor,
-    CancellationTokenSource cancellationTokenSource
-) : IDisposable
+    Func<TCursor, TCursor> clampCursor
+)
     where TPartition : notnull
     where TCursor : IComparable<TCursor>
 {
-    static readonly TimeSpan DefaultPollingInterval = TimeSpan.FromMilliseconds(100);
-
     TCursor? _cursorPosition;
     TCursor? _activeCatchUpCursorPosition;
     bool _hasCursorPosition;
@@ -44,18 +44,7 @@ internal sealed class PollRContext<TData, TPartition, TCursor>(
         Channel.CreateUnbounded<PendingSubscriber<TData, TPartition, TCursor>>();
 
     long _nextSubscriberId;
-
-    public TimeSpan PollingInterval { get; } = pollingInterval ?? DefaultPollingInterval;
-
-    public CancellationToken CancellationToken => cancellationTokenSource.Token;
-
-    public bool IsCancellationRequested => cancellationTokenSource.IsCancellationRequested;
-
     public IEnumerable<Subscriber<TData, TPartition, TCursor>> Subscribers => GetSubscribers();
-
-    public Task CancelAsync() => cancellationTokenSource.CancelAsync();
-
-    public void Dispose() => cancellationTokenSource.Dispose();
 
     public void Subscribe(
         TPartition partition,
@@ -64,12 +53,6 @@ internal sealed class PollRContext<TData, TPartition, TCursor>(
         CancellationToken cancellationToken
     )
     {
-        if (IsCancellationRequested)
-        {
-            stream.Complete(cancellationToken);
-            return;
-        }
-
         var subscriberId = Interlocked.Increment(ref _nextSubscriberId);
         var subscriberCursorPosition = ClampCursorPosition(cursorPosition);
         var subscriber = new Subscriber<TData, TPartition, TCursor>(
@@ -101,11 +84,6 @@ internal sealed class PollRContext<TData, TPartition, TCursor>(
             },
             (this, partition, subscriberId)
         );
-
-        if (IsCancellationRequested)
-        {
-            RemoveSubscriber(partition, subscriberId, disposeCancellationRegistration: true);
-        }
     }
 
     public bool TryGetPartitionSubscribers(

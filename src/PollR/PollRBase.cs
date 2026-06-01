@@ -12,8 +12,22 @@ public delegate IAsyncEnumerable<ProducerResult<TData, TPartition>> DataProducer
     CancellationToken cancellationToken
 );
 
+public delegate IAsyncEnumerable<ProducerResult<TData, TPartition, TCursor>> PartitionDataProducer<
+    TData,
+    TPartition,
+    TCursor
+>(TPartition partition, TCursor cursorPosition, CancellationToken cancellationToken)
+    where TPartition : notnull
+    where TCursor : IComparable<TCursor>;
+
+public delegate IAsyncEnumerable<ProducerResult<TData, TPartition>> PartitionDataProducer<
+    TData,
+    TPartition
+>(TPartition partition, DateTimeOffset cursorPosition, CancellationToken cancellationToken)
+    where TPartition : notnull;
+
 /// <summary>
-/// Base class for implementing a PollR caster. It manages the polling lifecycle, subscriber management, and projection handling.
+/// Base class for the existing shared-feed PollR implementation.
 /// </summary>
 /// <typeparam name="TData">The type of the data produced by the producer.</typeparam>
 /// <typeparam name="TPartition">The type of the partition key.</typeparam>
@@ -23,106 +37,40 @@ public delegate IAsyncEnumerable<ProducerResult<TData, TPartition>> DataProducer
 /// <param name="clampCursor">A function that clamps the cursor position to a valid range, typically used to enforce a maximum lookback window.</param>
 /// <param name="pollingInterval">The interval at which to poll for new data. If not provided, a default interval will be used.</param>
 /// <param name="cancellationToken">A cancellation token to observe for stopping the caster.</param>
-public abstract class PollRBase<TData, TPartition, TCursor>(
-    DataProducer<TData, TPartition, TCursor> producer,
-    Func<TCursor> initialCursorFactory,
-    Func<TCursor, TCursor> clampCursor,
-    TimeSpan? pollingInterval = null,
-    CancellationToken cancellationToken = default
-) : IAsyncDisposable, IDisposable
+/// <remarks>
+/// The runner lifecycle now lives in <see cref="PollRRunnerBase"/>. This type keeps the
+/// original shared-feed cursor and projection behavior while exposing the new shared
+/// direct-subscription contract.
+/// </remarks>
+public abstract class PollRBase<TData, TPartition, TCursor>
+    : PollRRunnerBase,
+        IPollRSubscriber<TData, TPartition, TCursor>
     where TPartition : notnull
     where TCursor : IComparable<TCursor>
 {
-    readonly DataProducer<TData, TPartition, TCursor> _producer = producer;
-    readonly Lock _lifecycleLock = new();
-    readonly SemaphoreSlim _tickLock = new(1, 1);
+    readonly DataProducer<TData, TPartition, TCursor> _producer;
     readonly System.Collections.Concurrent.ConcurrentDictionary<
         string,
         IProjectionGroup<TData, TPartition, TCursor>
     > _projectionGroups = new(StringComparer.Ordinal);
 
-    readonly PollRContext<TData, TPartition, TCursor> _context =
-        new(
-            pollingInterval,
-            initialCursorFactory,
-            clampCursor,
-            CancellationTokenSource.CreateLinkedTokenSource(cancellationToken)
-        );
+    readonly PollRContext<TData, TPartition, TCursor> _context;
 
-    Task? _startTask;
-    int _completed;
-    int _disposed;
-
-    public Task StartAsync()
+    protected PollRBase(
+        DataProducer<TData, TPartition, TCursor> producer,
+        Func<TCursor> initialCursorFactory,
+        Func<TCursor, TCursor> clampCursor,
+        TimeSpan? pollingInterval = null,
+        CancellationToken cancellationToken = default
+    )
+        : base(pollingInterval, cancellationToken)
     {
-        if (Volatile.Read(ref _disposed) == 1)
-        {
-            return Task.CompletedTask;
-        }
+        ArgumentNullException.ThrowIfNull(producer);
+        ArgumentNullException.ThrowIfNull(initialCursorFactory);
+        ArgumentNullException.ThrowIfNull(clampCursor);
 
-        lock (_lifecycleLock)
-        {
-            _startTask ??= RunCoreLoopAsync();
-            return _startTask;
-        }
-    }
-
-    /// <summary>
-    /// This is the core loop that runs the polling process.
-    /// </summary>
-    /// <remarks>
-    /// The loop runs the producer function on each tick and produces the list of
-    /// results The results are then broadcast to subscribers via projections.
-    ///
-    /// The loop is intentionally decoupled from the `TickAsync` method to allow for
-    /// external control and easier testing of the tick process as this allows
-    /// manual ticking rather than time controlled ticks (harder to test)
-    /// </remarks>>
-    async Task RunCoreLoopAsync()
-    {
-        while (!_context.IsCancellationRequested)
-        {
-            try
-            {
-                await TickAsync();
-                await Task.Delay(_context.PollingInterval, _context.CancellationToken);
-            }
-            catch (OperationCanceledException)
-            {
-                break;
-            }
-        }
-
-        await CompleteAsync();
-    }
-
-    public async Task StopAsync()
-    {
-        if (Volatile.Read(ref _disposed) == 1)
-        {
-            return;
-        }
-
-        await StopCoreAsync();
-    }
-
-    async Task StopCoreAsync()
-    {
-        await _context.CancelAsync();
-
-        Task? startTask;
-        lock (_lifecycleLock)
-        {
-            startTask = _startTask;
-        }
-
-        if (startTask is not null)
-        {
-            await startTask;
-            return;
-        }
-
-        await CompleteAsync();
+        _producer = producer;
+        _context = new(initialCursorFactory, clampCursor);
     }
 
     public void Subscribe(
@@ -132,7 +80,7 @@ public abstract class PollRBase<TData, TPartition, TCursor>(
         CancellationToken cancellationToken = default
     )
     {
-        if (Volatile.Read(ref _disposed) == 1)
+        if (IsDisposed || IsRunnerCancellationRequested)
         {
             stream.Complete(cancellationToken);
             return;
@@ -168,41 +116,17 @@ public abstract class PollRBase<TData, TPartition, TCursor>(
     }
 
     /// <summary>
-    /// A standard polling tick implementation that retrieves data from the
-    /// producer and broadcasts it to subscribers and projections.
+    /// Executes one shared-feed tick: register pending joins, select the next cursor,
+    /// stream produced items, then finalize catch-up state.
     /// </summary>
     /// <remarks>
-    /// This is meant to allow the tick process to be controllable externally
-    /// and easier to test.
+    /// The runner base already serialized this call. This method only owns shared-feed
+    /// data flow and projection fan-out.
     /// </remarks>
-    /// <param name="cancellationToken">A cancellation token to observe for stopping the tick process.</param>
-    /// <returns>A task that represents the asynchronous tick operation.</returns>
-    public async Task TickAsync(CancellationToken cancellationToken = default)
+    protected override async Task ExecuteTickCoreAsync(CancellationToken cancellationToken)
     {
-        if (Volatile.Read(ref _disposed) == 1 || _context.IsCancellationRequested)
-        {
-            return;
-        }
-
-        await _tickLock.WaitAsync(cancellationToken);
-
         try
         {
-            if (_context.IsCancellationRequested)
-            {
-                return;
-            }
-
-            using var tickCancellationTokenSource = cancellationToken.CanBeCanceled
-                ? CancellationTokenSource.CreateLinkedTokenSource(
-                    _context.CancellationToken,
-                    cancellationToken
-                )
-                : null;
-
-            var tickCancellationToken =
-                tickCancellationTokenSource?.Token ?? _context.CancellationToken;
-
             _context.RegisterPendingSubscribers();
             RegisterPendingProjectionSubscribers();
 
@@ -224,24 +148,19 @@ public abstract class PollRBase<TData, TPartition, TCursor>(
             // ⭐️ Here is where the producer function is invoked and the results are
             // processed as an async enumerable stream to reduce memory pressure for
             // manifesting the full collection.
-            await foreach (var item in _producer(cursorPosition, tickCancellationToken))
+            await foreach (var item in _producer(cursorPosition, cancellationToken))
             {
                 if (item.Cursor.CompareTo(latestCursorPosition) > 0)
                 {
                     latestCursorPosition = item.Cursor;
                 }
 
-                await PartitionResultBroadcastAsync(item, tickCancellationToken);
-                await ProjectionResultBroadcastAsync(item, tickCancellationToken);
+                await PartitionResultBroadcastAsync(item, cancellationToken);
+                await ProjectionResultBroadcastAsync(item, cancellationToken);
             }
 
             _context.CompletePollingTick(latestCursorPosition);
             CompleteProjectionPollingTick(latestCursorPosition);
-        }
-        catch (OperationCanceledException) when (_context.IsCancellationRequested) { }
-        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
-        {
-            throw;
         }
         catch (Exception ex)
         {
@@ -251,38 +170,13 @@ public abstract class PollRBase<TData, TPartition, TCursor>(
                 CancellationToken.None
             );
         }
-        finally
-        {
-            _tickLock.Release();
-        }
     }
 
-    public void Dispose()
+    /// <summary>
+    /// Completes shared-feed direct and projection subscribers exactly once.
+    /// </summary>
+    protected override async Task CompleteCoreAsync()
     {
-        DisposeAsync().AsTask().GetAwaiter().GetResult();
-        GC.SuppressFinalize(this);
-    }
-
-    public async ValueTask DisposeAsync()
-    {
-        if (Interlocked.Exchange(ref _disposed, 1) == 1)
-        {
-            return;
-        }
-
-        await StopCoreAsync();
-        _tickLock.Dispose();
-        _context.Dispose();
-        GC.SuppressFinalize(this);
-    }
-
-    private async Task CompleteAsync()
-    {
-        if (Interlocked.Exchange(ref _completed, 1) == 1)
-        {
-            return;
-        }
-
         await BroadcastAsync(new StreamCompletedResult(), CancellationToken.None);
         await BroadcastProjectionCompletedAsync(
             new StreamCompletedResult(),
@@ -323,7 +217,7 @@ public abstract class PollRBase<TData, TPartition, TCursor>(
         CancellationToken cancellationToken = default
     )
     {
-        if (Volatile.Read(ref _disposed) == 1 || _context.IsCancellationRequested)
+        if (IsDisposed || IsRunnerCancellationRequested)
         {
             var completedStream = ChannelDataStream<
                 IntervalData<TPayload, TPartition, TCursor>

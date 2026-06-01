@@ -1,10 +1,12 @@
 # PollR
 
-PollR is a .NET library for building long-running, streaming pollers.
+PollR is a .NET 10, C#14 library for building long-running, streaming pollers.
 
 Add the ASP.NET adapter for easy Server-Sent Events (SSE) integration or build your own custom adapter for other scenarios.
 
 Provides a no-infrastructure, easy to understand way to implement streaming data polls over SSE.
+
+![PollR Polar](./media/pollr-dark.png)
 
 ## Usage Overview
 
@@ -12,7 +14,7 @@ Provides a no-infrastructure, easy to understand way to implement streaming data
 dotnet add package PollR.AspNetCore
 ```
 
-A bare minimum PollR setup exposes a cursor-backed data source as Server-Sent Events:
+A bare minimum setup using `PollRCaster` (the global feed poller) exposes a cursor-backed data source as Server-Sent Events:
 
 ```csharp
 using System.Text.Json;
@@ -150,7 +152,7 @@ Consumers join the stream by providing:
 
 The read cycle uses the current cursor unless a subscriber is catching up, in which case it reads from the oldest active catch-up cursor.  This allows the poller to efficiently read forward without needing to run a separate read for each consumer, but keep in mind that *it does not partition by consumer*; it uses a global feed.
 
-> ℹ️ PollR does not produce separate polling for each partition (future improvement); it performs a global polling read and then distributes the results by subscribed partition while reading through all results.  This is most suitable for scenarios where consumers join occasionally, sync up, and stay attached to the feed for long durations.
+> ℹ️ `PollRCaster` performs a global polling read and then distributes the results by subscribed partition while reading through all results.  This is most suitable for scenarios where consumers join occasionally, sync up, and stay attached to the feed for long durations.  When each partition needs its own cursor, failure domain, or independent polling cost, use `PartitionedPollRCaster` instead—see [Partitioned Poller](#partitioned-poller) in the Usage section.
 
 ### Broadcasting
 
@@ -164,13 +166,17 @@ If there are, it checks each consumer's cursor to determine whether the record i
 
 Because the poller reads from a global feed, it is not suitable for all scenarios.  Most notably, it performs best when the consumer pattern favors low number of joins (long connected sessions) since the newest join incurs the highest cost of lookback.  This implementation trades the read efficiency of a ring buffer for the memory efficiency of only relying on a polling read (which can scale at the DB layer using replicas).
 
+> 💡 If per-partition lookback, failure isolation, or partition-specific polling cost is a priority, `PartitionedPollRCaster` addresses all of these directly.  See [Partitioned Poller](#partitioned-poller) in the Usage section.
+
 ## Key Entities
 
 |Class|Description|
 |---|---|
 |`PollRBase<TData, TPartition, TCursor>`|The base poller that reads from a data source and broadcasts to consumers.  This is the core of the library and is designed to be extended for different types of data sources and cursors.|
 |`PollRCaster<TData, TPartition>`|The default `DateTimeOffset` implementation of the poller.  This is designed to be used out of the box for most scenarios.|
-|`PollR.AspNetCore`|ASP.NET Core extensions for exposing a `PollRCaster` as Server-Sent Events.|
+|`PartitionedPollRBase<TData, TPartition, TCursor>`|The partition-aware base poller that schedules and polls active partitions independently.  Use this when cursor movement, retries, and failures need to stay local to each partition.|
+|`PartitionedPollRCaster<TData, TPartition>`|The default `DateTimeOffset` partitioned implementation.  This is designed for scenarios where a shared global feed is not the right polling model.|
+|`PollR.AspNetCore`|ASP.NET Core extensions for exposing `PollRCaster` and `PartitionedPollRCaster` as Server-Sent Events.|
 |`IDataStream<TData>`|The interface that represents a stream of data that can be read from.  This is used by the poller to read data from the producer.|
 |`ChannelDataStream<TData>`|A concrete implementation of `IDataStream<TData>` that uses a channel to buffer data between the producer and consumers.  Use this as the default|
 
@@ -205,9 +211,11 @@ dotnet run --project samples/Console -- story-mode
 
 ## Usage
 
-### Basic Usage
+### Global Feed Poller
 
-Basic usage of a poller reading from a producer that produces `int` data, partitioned by `string`, and using a `DateTimeOffset` cursor:
+`PollRCaster` reads from one shared data source and distributes records to subscribers by partition.  Use this when all partitions share a common query path and the workload favors long-lived subscribers that stay attached to the same feed.
+
+Basic usage reading from a producer that produces `int` data, partitioned by `string`, and using a `DateTimeOffset` cursor:
 
 ```csharp
 using PollR;
@@ -257,6 +265,88 @@ static async IAsyncEnumerable<ProducerResult<int, string>> ProduceAsync(
 ```
 
 > 💡 See the `samples/Console` for more examples.
+
+### Partitioned Poller
+
+`PartitionedPollRCaster` is the alternative when a **global feed is the wrong unit of work**.  Instead of reading one shared stream and distributing by partition after the fact, it treats each active partition as its own polling lane.
+
+That changes the behavior in a few important ways:
+
+1. Catch-up is local to the partition that asked for it.
+2. Retry and failure stay local to the partition that failed.
+3. Idle partitions stop polling until a subscriber joins again.
+4. Different due partitions can poll concurrently up to the configured limit.
+
+Use it when per-partition lookback, partition-local failure isolation, or partition-specific polling cost matters more than reading from one shared global feed.
+
+```csharp
+using PollR;
+
+enum OrderProjection
+{
+    Summary
+}
+
+record OrderEvent(long Id, string Tenant, decimal Total, DateTimeOffset CreatedAt);
+
+var poller = new PartitionedPollRCaster<OrderEvent, string>(
+    async (tenant, cursor, cancellationToken) =>
+    {
+        // 👇 Poll one partition at a time instead of scanning a shared global feed.
+        await foreach (var order in ReadOrdersAsync(tenant, cursor, cancellationToken))
+        {
+            // Each yielded record still carries data, cursor, and partition.
+            yield return new ProducerResult<OrderEvent, string>(
+                order,
+                order.CreatedAt,
+                tenant
+            );
+        }
+    },
+    // Each active partition uses the same base interval.
+    pollingInterval: TimeSpan.FromSeconds(1),
+    // Due partitions may poll together up to this limit.
+    maxConcurrentPartitions: 4
+)
+// Registered projections still run once per item/key/partition and then fan out.
+.RegisterProjection(
+    OrderProjection.Summary,
+    data => new { data.Data.Id, data.Data.Total }
+);
+
+var tenantOneStream = poller.Subscribe(
+    "tenant-1",
+    DateTimeOffset.UtcNow.AddMinutes(-1)
+); // 🛜 Subscribe one partition directly.
+
+var tenantTwoProjectionStream = poller.SubscribeProjection<OrderProjection, object>(
+    OrderProjection.Summary,
+    "tenant-2",
+    DateTimeOffset.UtcNow.AddMinutes(-5) // 👈
+); // A deeper lookback on tenant-2 does not rewind tenant-1.
+
+await poller.TickAsync(); // ▶️ Run one tick across only the partitions that are currently due.
+
+while (tenantOneStream.Reader.TryRead(out var item))
+{
+    if (item.TryGetData(out var result))
+    {
+        // Direct subscribers receive raw records.
+        Console.WriteLine($"direct {result.Partition} {result.Cursor:O} {result.Data.Total}");
+    }
+}
+
+while (tenantTwoProjectionStream.Reader.TryRead(out var item))
+{
+    if (item.TryGetData(out var result))
+    {
+        // Projection subscribers receive the registered shape.
+        Console.WriteLine($"projection {result.Partition} {result.Cursor:O} {result.Data}");
+    }
+}
+```
+
+The ASP.NET SSE adapter works with the partitioned poller as well, so the same `ForHttp(...)` builder can expose partition-local streams over HTTP.
 
 ### ASP.NET Core
 
@@ -321,6 +411,26 @@ events.onerror = () => {
 ```
 
 > `EventSource` reconnects automatically. PollR uses `Last-Event-ID` to resume from the last cursor the browser received. Native `EventSource` does not support custom request headers, so browser authentication usually uses cookies or URL-scoped tokens.
+
+#### Partitioned Poller with ASP.NET Core
+
+The `ForHttp(...)` call, subscription builder, SSE options, and browser-side `EventSource` setup are identical to the global feed version above.  The only difference is the poller type — `PartitionedPollRCaster` produces a partition-local stream per subscriber instead of filtering a shared global feed.
+
+```csharp
+using PollR.AspNetCore;
+
+// Same ForHttp builder surface; works because PartitionedPollRCaster implements
+// the same shared subscriber contract as PollRCaster.
+app.MapGet("/events/{tenant}", (string tenant, IHttpContextAccessor httpContextAccessor) =>
+    partitionedPoller // 👈 only thing that changed
+        .ForHttp(httpContextAccessor)
+        .WithSubscription(tenant, DateTimeOffset.UtcNow.AddMinutes(-1))
+        .WithSseEventType(partition => partition)
+        .WithRegisteredSerializedProjection(MessageProjection.Full) // same projection API
+);
+```
+
+> 💡 Registered projections, ad-hoc projections, and `WithSseEventType` all work exactly the same way.
 
 ### Registered Projections vs Ad-Hoc Projections
 

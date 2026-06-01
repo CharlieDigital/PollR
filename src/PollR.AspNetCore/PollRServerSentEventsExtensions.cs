@@ -10,10 +10,20 @@ namespace PollR.AspNetCore;
 public static class PollRServerSentEventsExtensions
 {
     public static PollRHttpBuilder<TData, TPartition> ForHttp<TData, TPartition>(
-        this PollRCaster<TData, TPartition> poller,
+        this IPollRSubscriber<TData, TPartition, DateTimeOffset> poller,
         IHttpContextAccessor httpContextAccessor
     )
-        where TPartition : notnull => new(poller, httpContextAccessor);
+        where TPartition : notnull
+    {
+        if (poller is not IPollRProjectionSubscriber<TPartition, DateTimeOffset> projectionPoller)
+        {
+            throw new InvalidOperationException(
+                "The poller does not expose the shared projection subscription contract."
+            );
+        }
+
+        return new(poller, projectionPoller, httpContextAccessor);
+    }
 }
 
 public readonly record struct PollRServerSentEventsOptions(
@@ -29,7 +39,8 @@ public readonly record struct PollRServerSentEventsOptions(
 }
 
 public readonly record struct PollRHttpBuilder<TData, TPartition>(
-    PollRCaster<TData, TPartition> Poller,
+    IPollRSubscriber<TData, TPartition, DateTimeOffset> Poller,
+    IPollRProjectionSubscriber<TPartition, DateTimeOffset> ProjectionPoller,
     IHttpContextAccessor HttpContextAccessor
 )
     where TPartition : notnull
@@ -37,11 +48,12 @@ public readonly record struct PollRHttpBuilder<TData, TPartition>(
     public PollRSubscriptionBuilder<TData, TPartition> WithSubscription(
         TPartition partition,
         DateTimeOffset defaultCursor
-    ) => new(Poller, HttpContextAccessor, partition, defaultCursor);
+    ) => new(Poller, ProjectionPoller, HttpContextAccessor, partition, defaultCursor);
 }
 
 public readonly record struct PollRSubscriptionBuilder<TData, TPartition>(
-    PollRCaster<TData, TPartition> Poller,
+    IPollRSubscriber<TData, TPartition, DateTimeOffset> Poller,
+    IPollRProjectionSubscriber<TPartition, DateTimeOffset> ProjectionPoller,
     IHttpContextAccessor HttpContextAccessor,
     TPartition Partition,
     DateTimeOffset DefaultCursor,
@@ -51,20 +63,21 @@ public readonly record struct PollRSubscriptionBuilder<TData, TPartition>(
     where TPartition : notnull
 {
     public PollRSubscriptionBuilder(
-        PollRCaster<TData, TPartition> poller,
+        IPollRSubscriber<TData, TPartition, DateTimeOffset> poller,
+        IPollRProjectionSubscriber<TPartition, DateTimeOffset> projectionPoller,
         IHttpContextAccessor httpContextAccessor,
         TPartition partition,
         DateTimeOffset defaultCursor
     )
         : this(
             poller,
+            projectionPoller,
             httpContextAccessor,
             partition,
             defaultCursor,
             PollRServerSentEventsOptions.Default,
             _ => null
-        )
-    { }
+        ) { }
 
     public PollRSubscriptionBuilder<TData, TPartition> WithOptions(
         PollRServerSentEventsOptions options
@@ -120,7 +133,7 @@ public readonly record struct PollRSubscriptionBuilder<TData, TPartition>(
     public ServerSentEventsResult<string> WithRegisteredSerializedProjection(string key)
     {
         var httpContext = GetHttpContext();
-        var stream = Poller.SubscribeSerializedProjection(
+        var stream = ProjectionPoller.SubscribeProjection<string>(
             key,
             Partition,
             GetCursor(httpContext),
@@ -140,32 +153,13 @@ public readonly record struct PollRSubscriptionBuilder<TData, TPartition>(
     }
 
     public ServerSentEventsResult<string> WithRegisteredSerializedProjection<TEnum>(TEnum key)
-        where TEnum : struct, Enum
-    {
-        var httpContext = GetHttpContext();
-        var stream = Poller.SubscribeSerializedProjection(
-            key,
-            Partition,
-            GetCursor(httpContext),
-            Options.StreamCapacity,
-            httpContext.RequestAborted
-        );
-
-        return TypedResults.ServerSentEvents(
-            ReadServerSentEventsAsync(
-                stream.Reader,
-                data => data.Data,
-                EventTypeSelector,
-                Options.ReconnectionInterval,
-                httpContext.RequestAborted
-            )
-        );
-    }
+        where TEnum : struct, Enum =>
+        WithRegisteredSerializedProjection($"{typeof(TEnum).FullName ?? typeof(TEnum).Name}.{key}");
 
     public ServerSentEventsResult<TPayload> WithRegisteredProjection<TPayload>(string key)
     {
         var httpContext = GetHttpContext();
-        var stream = Poller.SubscribeProjection<TPayload>(
+        var stream = ProjectionPoller.SubscribeProjection<TPayload>(
             key,
             Partition,
             GetCursor(httpContext),
@@ -185,27 +179,8 @@ public readonly record struct PollRSubscriptionBuilder<TData, TPartition>(
     }
 
     public ServerSentEventsResult<TPayload> WithRegisteredProjection<TEnum, TPayload>(TEnum key)
-        where TEnum : struct, Enum
-    {
-        var httpContext = GetHttpContext();
-        var stream = Poller.SubscribeProjection<TEnum, TPayload>(
-            key,
-            Partition,
-            GetCursor(httpContext),
-            Options.StreamCapacity,
-            httpContext.RequestAborted
-        );
-
-        return TypedResults.ServerSentEvents(
-            ReadServerSentEventsAsync(
-                stream.Reader,
-                data => data.Data,
-                EventTypeSelector,
-                Options.ReconnectionInterval,
-                httpContext.RequestAborted
-            )
-        );
-    }
+        where TEnum : struct, Enum =>
+        WithRegisteredProjection<TPayload>($"{typeof(TEnum).FullName ?? typeof(TEnum).Name}.{key}");
 
     HttpContext GetHttpContext() =>
         HttpContextAccessor.HttpContext
