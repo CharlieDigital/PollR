@@ -6,8 +6,6 @@ Add the ASP.NET adapter for easy Server-Sent Events (SSE) integration or build y
 
 Provides a no-infrastructure, easy to understand way to implement streaming data polls over SSE.
 
-![PollR Polar](./media/pollr-dark.png)
-
 ## Usage Overview
 
 ```shell
@@ -414,23 +412,69 @@ events.onerror = () => {
 
 #### Partitioned Poller with ASP.NET Core
 
-The `ForHttp(...)` call, subscription builder, SSE options, and browser-side `EventSource` setup are identical to the global feed version above.  The only difference is the poller type — `PartitionedPollRCaster` produces a partition-local stream per subscriber instead of filtering a shared global feed.
+The key difference from the global feed setup is the producer signature: `PartitionedPollRCaster` calls the producer **once per active partition** and passes a partition-local cursor.  Each tenant's cursor, catch-up state, and failures stay fully isolated.  The `ForHttp(...)` builder surface, SSE options, and browser-side `EventSource` wiring are otherwise identical.
 
 ```csharp
+using System.Text.Json;
+using PollR;
 using PollR.AspNetCore;
 
-// Same ForHttp builder surface; works because PartitionedPollRCaster implements
-// the same shared subscriber contract as PollRCaster.
-app.MapGet("/events/{tenant}", (string tenant, IHttpContextAccessor httpContextAccessor) =>
-    partitionedPoller // 👈 only thing that changed
-        .ForHttp(httpContextAccessor)
-        .WithSubscription(tenant, DateTimeOffset.UtcNow.AddMinutes(-1))
-        .WithSseEventType(partition => partition)
-        .WithRegisteredSerializedProjection(MessageProjection.Full) // same projection API
+enum OrderProjection
+{
+    Full
+}
+
+record OrderEvent(long Id, string Tenant, decimal Total, DateTimeOffset CreatedAt);
+
+var builder = WebApplication.CreateBuilder(args);
+builder.Services.AddHttpContextAccessor();
+
+var app = builder.Build();
+
+var poller = new PartitionedPollRCaster<OrderEvent, string>(
+    async (tenant, cursor, cancellationToken) =>
+    {
+        // Called once per active partition; `cursor` belongs only to `tenant`.
+        // Other tenants poll independently and are never rewound by this one.
+        await foreach (var order in ReadOrdersAsync(tenant, cursor, cancellationToken))
+        {
+            yield return new ProducerResult<OrderEvent, string>(
+                order,
+                order.CreatedAt,
+                tenant
+            );
+        }
+    },
+    pollingInterval: TimeSpan.FromSeconds(1)
+)
+.RegisterSerializedProjection(
+    OrderProjection.Full,
+    data => JsonSerializer.Serialize(data.Data)
 );
+// 👆 Serialization runs once per record/projection and the result is shared across
+// matching subscribers — same low-allocation path as the global feed poller.
+
+app.MapGet(
+    "/events/{tenant}",
+    (string tenant, IHttpContextAccessor httpContextAccessor) =>
+        poller
+            // Read Last-Event-ID and subscribe this request to the tenant partition.
+            .ForHttp(httpContextAccessor)
+            .WithSubscription(tenant, DateTimeOffset.UtcNow.AddMinutes(-1))
+            // Send the tenant as the SSE event name.
+            .WithSseEventType(partition => partition)
+            // Use the registered serialized payload; no per-client JSON work.
+            .WithRegisteredSerializedProjection(OrderProjection.Full)
+);
+
+// Start polling when the server starts and stop cleanly with the app.
+app.Lifetime.ApplicationStarted.Register(() => _ = poller.StartAsync());
+app.Lifetime.ApplicationStopping.Register(() => _ = poller.StopAsync());
+
+app.Run();
 ```
 
-> 💡 Registered projections, ad-hoc projections, and `WithSseEventType` all work exactly the same way.
+> 💡 Registered projections, ad-hoc projections, and `WithSseEventType` all work exactly the same way for both poller types.  Idle partitions (no active subscribers) stop polling automatically and resume when a new subscriber joins.
 
 ### Registered Projections vs Ad-Hoc Projections
 
