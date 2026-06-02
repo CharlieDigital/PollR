@@ -3,28 +3,12 @@
     <TargetFramework>net10.0</TargetFramework>
     <ImplicitUsings>enable</ImplicitUsings>
     <Nullable>enable</Nullable>
+    <RootNamespace>PollR.AspNetCore</RootNamespace>
     <!-- Nuget -->
-    <IsPublishable>True</IsPublishable>
-    <IncludeBuildOutput>false</IncludeBuildOutput>
-    <GeneratePackageOnBuild>True</GeneratePackageOnBuild>
-    <RootNamespace>Pollr</RootNamespace>
-    <Authors>@chrlschn</Authors>
-    <Company />
+    <IsPackable>True</IsPackable>
+    <PackageId>PollR.AspNetCore</PackageId>
     <Description>A polling library for ASP.NET to SSE streams.</Description>
-    <PackageProjectUrl>https://github.com/CharlieDigital/PollR</PackageProjectUrl>
-    <PackageReadmeFile>README.md</PackageReadmeFile>
-    <RepositoryUrl>https://github.com/CharlieDigital/PollR</RepositoryUrl>
-    <PackageTags>polling; sse; .net; streams</PackageTags>
-    <PackageLicenseExpression>MIT</PackageLicenseExpression>
-    <PackageReleaseNotes>https://github.com/CharlieDigital/PollR/releases</PackageReleaseNotes>
-    <RepositoryType>git</RepositoryType>
-    <SignAssembly>False</SignAssembly>
-    <AssemblyVersion>1.0.0</AssemblyVersion>
-    <FileVersion>1.0.0</FileVersion>
-    <Version>1.0.0</Version>
-    <NeutralLanguage>en</NeutralLanguage>
-    <DevelopmentDependency>true</DevelopmentDependency>
-    <SuppressDependenciesWhenPacking>true</SuppressDependenciesWhenPacking>
+    <GeneratePackageOnBuild>true</GeneratePackageOnBuild>
   </PropertyGroup>
 
   <ItemGroup>

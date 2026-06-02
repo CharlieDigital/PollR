@@ -1,4 +1,8 @@
 using System.Text.Json;
+using Microsoft.EntityFrameworkCore;
+using PollR;
+using PollR.AspNetCore;
+using PollR.Samples.WebShared;
 
 var builder = WebApplication.CreateBuilder(args);
 
