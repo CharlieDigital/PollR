@@ -6,8 +6,8 @@
   <Folder Name="/samples/Web/">
     <Project Path="samples/WebController/WebController.csproj" />
     <Project Path="samples/WebMinimal/WebMinimal.csproj" />
-    <Project Path="samples/WebMinimalPartitioned/WebMinimalPartitioned.csproj" />
     <Project Path="samples/WebMinimalGrpc/WebMinimalGrpc.csproj" />
+    <Project Path="samples/WebMinimalPartitioned/WebMinimalPartitioned.csproj" />
     <Project Path="samples/WebShared/WebShared.csproj" />
   </Folder>
   <Folder Name="/src/">

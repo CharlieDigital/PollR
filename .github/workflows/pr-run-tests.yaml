@@ -1,0 +1,81 @@
+# This workflow runs the full test project for pull requests.
+
+name: PR Run Tests
+
+on:
+  pull_request:
+
+permissions:
+  contents: read
+  checks: write
+  pull-requests: write
+
+env:
+  # Keep .NET output compact and consistent in CI logs.
+  DOTNET_NOLOGO: true
+  DOTNET_SKIP_FIRST_TIME_EXPERIENCE: true
+
+jobs:
+  pollr-tests:
+    name: Run PollR tests
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v6
+
+      - name: Set up .NET
+        uses: actions/setup-dotnet@v5
+        with:
+          dotnet-version: 10.0.x
+
+      - name: Restore dependencies
+        run: dotnet restore src/PollR.Tests
+
+      - name: Build tests
+        run: dotnet build src/PollR.Tests --no-restore --nologo
+
+      - name: Run tests
+        id: run-tests
+        continue-on-error: true
+        run: |
+          set +e
+          dotnet run --project src/PollR.Tests \
+            --output detailed \
+            --disable-logo \
+            --results-directory TestResults \
+            --report-trx \
+            --report-trx-filename pollr-tests.trx
+          test_exit_code=$?
+          echo "exit-code=${test_exit_code}" >> "$GITHUB_OUTPUT"
+          exit 0
+
+      - name: Upload test result artifact
+        if: ${{ always() }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: pollr-test-results
+          path: TestResults/**/*.trx
+          if-no-files-found: warn
+
+      # See: https://github.com/im-open/process-dotnet-test-results
+      - name: Publish test report
+        id: test-report
+        if: ${{ always() }}
+        uses: im-open/process-dotnet-test-results@v4.0.0
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          base-directory: TestResults
+          create-status-check: true
+          ignore-test-failures: true
+          create-pr-comment: true
+          update-comment-if-one-exists: true
+          comment-identifier: pr-pollr-tests
+
+      - name: Add test report to job summary
+        if: ${{ always() && steps.test-report.outputs.test-results-file-path != '' }}
+        run: cat "${{ steps.test-report.outputs.test-results-file-path }}" >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Fail workflow when tests fail
+        if: ${{ steps.run-tests.outputs.exit-code != '0' }}
+        run: exit 1
